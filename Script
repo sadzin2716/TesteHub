@@ -1,7 +1,7 @@
 --[[
     MVSD - Murderers VS Sheriffs DUELS
     UI: WindUI | Tema: Dark
-    Aba: Highlights (ESP Global Cor Única)
+    Versão: Totalmente Otimizada (High Performance & Anti-Leak)
 ]]
 
 local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
@@ -11,7 +11,7 @@ local Window = WindUI:CreateWindow({
     Title = "MVSD Highlights",
     Icon = "eye",
     Theme = "Dark",
-    Size = UDim2.fromOffset(550, 450),
+    Size = UDim2.fromOffset(550, 480),
     Acrylic = true,
     Transparent = true,
     MinimizeKey = Enum.KeyCode.RightShift
@@ -25,14 +25,17 @@ local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 ------------------------------------------------------------------------
--- CONFIGURAÇÕES DOS MÓDULOS (Ativados por Padrão)
+-- CONFIGURAÇÕES E ESTRUTURAS DE CACHE
 ------------------------------------------------------------------------
 local ESP = {
     enabled = true,         
     tracersEnabled = true,  
     skeletonEnabled = true, 
-    globalColor = Color3.fromRGB(255, 0, 0), -- Iniciando em Vermelho Puro para todos
-    highlights = {}, lines = {}, skeletons = {}, maxDistance = 9999
+    globalColor = Color3.fromRGB(255, 0, 0), -- Vermelho padrão global
+    highlights = {}, 
+    lines = {}, 
+    skeletons = {}, 
+    maxDistance = 9999
 }
 
 local BoneConnections = {
@@ -44,77 +47,138 @@ local BoneConnections = {
     {"Torso", "Left Arm"}, {"Torso", "Right Arm"}, {"Torso", "Left Leg"}, {"Torso", "Right Leg"}, {"Head", "Torso"}
 }
 
+-- Cache central de informações dos jogadores para evitar varreduras lineares repetitivas
+local PlayerCache = {}
+
 ------------------------------------------------------------------------
--- MÓDULO HIGHLIGHTS
+-- FUNÇÕES DE LIMPEZA E POOLING (Anti-Leak)
 ------------------------------------------------------------------------
 local function clearPlayerVisuals(plr)
-    if ESP.highlights[plr] then pcall(function() ESP.highlights[plr]:Destroy() end); ESP.highlights[plr] = nil end
-    if ESP.lines[plr] then pcall(function() ESP.lines[plr]:Remove() end); ESP.lines[plr] = nil end
+    if ESP.highlights[plr] then 
+        pcall(function() ESP.highlights[plr]:Destroy() end)
+        ESP.highlights[plr] = nil 
+    end
+    if ESP.lines[plr] then 
+        pcall(function() ESP.lines[plr]:Remove() end)
+        ESP.lines[plr] = nil 
+    end
     if ESP.skeletons[plr] then
-        for _, line in ipairs(ESP.skeletons[plr]) do pcall(function() line:Remove() end) end
+        -- Limpa o Object Pool de linhas do desenho
+        for _, line in ipairs(ESP.skeletons[plr].Lines) do 
+            pcall(function() line:Remove() end) 
+        end
         ESP.skeletons[plr] = nil
     end
 end
 
+-- Object Pool: Reutiliza instâncias de 'Line' para evitar sobrecarga no Garbage Collector
 local function getSkeletonLines(plr, count)
-    if not ESP.skeletons[plr] then ESP.skeletons[plr] = {} end
-    while #ESP.skeletons[plr] < count do
+    local cache = ESP.skeletons[plr]
+    if not cache then
+        cache = { Lines = {}, ActiveCount = 0 }
+        ESP.skeletons[plr] = cache
+    end
+    
+    while #cache.Lines < count do
         local line = Drawing.new("Line")
         line.Thickness = 2
         line.Transparency = 0.7
-        table.insert(ESP.skeletons[plr], line)
+        table.insert(cache.Lines, line)
     end
-    return ESP.skeletons[plr]
+    return cache.Lines
 end
 
+------------------------------------------------------------------------
+-- GERENCIAMENTO DE CICLO DE VIDA (Event-Driven)
+------------------------------------------------------------------------
+local function onCharacterAdded(plr, char)
+    clearPlayerVisuals(plr) -- Limpa resíduos anteriores caso existam
+    
+    local hum = char:WaitForChild("Humanoid", 5)
+    local hrp = char:WaitForChild("HumanoidRootPart", 5) or char:WaitForChild("Head", 5)
+    
+    if hum and hrp then
+        PlayerCache[plr] = {
+            Character = char,
+            Humanoid = hum,
+            RootPart = hrp,
+            CachedBones = {} -- Evita usar FindFirstChild a cada frame
+        }
+        
+        -- Evento nativo para limpar assim que o personagem morre
+        hum.Died:Connect(function()
+            clearPlayerVisuals(plr)
+        end)
+    end
+end
+
+local function onPlayerAdded(plr)
+    if plr == player then return end
+    plr.CharacterAdded:Connect(function(char)
+        onCharacterAdded(plr, char)
+    end)
+    if plr.Character then
+        task.spawn(onCharacterAdded, plr, plr.Character)
+    end
+end
+
+-- Inicializa escutas para quem já está ou vai entrar no servidor
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, plr in ipairs(Players:GetPlayers()) do
+    onPlayerAdded(plr)
+end
+
+Players.PlayerRemoving:Connect(function(plr)
+    clearPlayerVisuals(plr)
+    PlayerCache[plr] = nil
+end)
+
+------------------------------------------------------------------------
+-- LOOP DE RENDERIZAÇÃO OTIMIZADO (RenderStepped)
+------------------------------------------------------------------------
 RunService.RenderStepped:Connect(function()
     local anyVisualEnabled = ESP.enabled or ESP.tracersEnabled or ESP.skeletonEnabled
     if not anyVisualEnabled then
-        for plr, _ in pairs(ESP.highlights) do clearPlayerVisuals(plr) end
-        for plr, _ in pairs(ESP.lines) do clearPlayerVisuals(plr) end
-        for plr, _ in pairs(ESP.skeletons) do clearPlayerVisuals(plr) end
+        for plr, _ in pairs(PlayerCache) do clearPlayerVisuals(plr) end
         return
     end
 
     local viewport = camera.ViewportSize
     local origin = Vector2.new(viewport.X / 2, viewport.Y)
     
-    local refPos = camera.CFrame.Position
-    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-        refPos = player.Character.HumanoidRootPart.Position
-    end
+    local localRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    local refPos = localRoot and localRoot.Position or camera.CFrame.Position
+    local color = ESP.globalColor
 
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == player then continue end
+    -- Itera sobre o nosso Cache estático em vez de rodar Players:GetPlayers()
+    for plr, data in pairs(PlayerCache) do
+        local char = data.Character
+        local hrp = data.RootPart
+        local hum = data.Humanoid
 
-        local char = plr.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head"))
-
-        if not char or not hum or hum.Health <= 0 or not hrp then
+        -- Early Return defensivo: Jogador inválido, descarregado ou morto
+        if not char or not char.Parent or hum.Health <= 0 or not hrp or not hrp.Parent then
             clearPlayerVisuals(plr)
             continue
         end
 
+        -- Checagem rápida de distância limite
         local distance = (refPos - hrp.Position).Magnitude
-        local color = ESP.globalColor -- Aplica a mesma cor para todo mundo
-
         if distance > ESP.maxDistance then
-            if ESP.highlights[plr] then ESP.highlights[plr].Enabled = false end
-            if ESP.lines[plr] then ESP.lines[plr].Visible = false end
-            if ESP.skeletons[plr] then
-                for _, line in ipairs(ESP.skeletons[plr]) do line.Visible = false end
-            end
+            clearPlayerVisuals(plr)
             continue
         end
 
-        -- Highlight (Chamber)
+        -- FOV Check básico: Descobre se o jogador está visível na tela
+        local hrpPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+
+        -- 1. Desenho do Highlight (Processado nativamente pela Engine C++)
         if ESP.enabled then
             local hl = ESP.highlights[plr]
             if not hl or hl.Parent ~= char then
                 if hl then pcall(function() hl:Destroy() end) end
                 hl = Instance.new("Highlight")
-                hl.Name = "ESP_Highlight"
+                hl.Name = "ESP_H"
                 hl.FillTransparency = 0.4
                 hl.OutlineTransparency = 0.2
                 hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
@@ -128,36 +192,49 @@ RunService.RenderStepped:Connect(function()
             if ESP.highlights[plr] then pcall(function() ESP.highlights[plr]:Destroy() end); ESP.highlights[plr] = nil end
         end
 
-        -- Tracers (Linhas)
+        -- [OTIMIZAÇÃO CRÍTICA]: Se o jogador não está na tela, pula os cálculos 2D pesados
+        if not onScreen then
+            if ESP.lines[plr] then ESP.lines[plr].Visible = false end
+            local skCache = ESP.skeletons[plr]
+            if skCache then for _, l in ipairs(skCache.Lines) do l.Visible = false end end
+            continue
+        end
+
+        -- 2. Desenho dos Tracers (Linhas)
         if ESP.tracersEnabled then
-            local screenPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
-            if onScreen then
-                local line = ESP.lines[plr]
-                if not line then
-                    line = Drawing.new("Line")
-                    line.Thickness = 1.5
-                    line.Transparency = 0.5
-                    ESP.lines[plr] = line
-                end
-                line.From = origin
-                line.To = Vector2.new(screenPos.X, screenPos.Y)
-                line.Color = color
-                line.Visible = true
-            else
-                if ESP.lines[plr] then ESP.lines[plr].Visible = false end
+            local line = ESP.lines[plr]
+            if not line then
+                line = Drawing.new("Line")
+                line.Thickness = 1.5
+                line.Transparency = 0.5
+                ESP.lines[plr] = line
             end
+            line.From = origin
+            line.To = Vector2.new(hrpPos.X, hrpPos.Y)
+            line.Color = color
+            line.Visible = true
         else
             if ESP.lines[plr] then pcall(function() ESP.lines[plr]:Remove() end); ESP.lines[plr] = nil end
         end
 
-        -- Skeletons (Esqueleto)
+        -- 3. Desenho dos Skeletons (Esqueleto estruturado)
         if ESP.skeletonEnabled then
             local skLines = getSkeletonLines(plr, #BoneConnections)
             local lineIndex = 1
 
             for _, connection in ipairs(BoneConnections) do
-                local partA = char:FindFirstChild(connection[1])
-                local partB = char:FindFirstChild(connection[2])
+                -- Recupera a junta pelo cache interno para poupar chamadas FindFirstChild
+                local partA = data.CachedBones[connection[1]]
+                if not partA then
+                    partA = char:FindFirstChild(connection[1])
+                    data.CachedBones[connection[1]] = partA
+                end
+                
+                local partB = data.CachedBones[connection[2]]
+                if not partB then
+                    partB = char:FindFirstChild(connection[2])
+                    data.CachedBones[connection[2]] = partB
+                end
 
                 if partA and partB then
                     local posA, onScreenA = camera:WorldToViewportPoint(partA.Position)
@@ -173,12 +250,44 @@ RunService.RenderStepped:Connect(function()
                     end
                 end
             end
+            -- Oculta as linhas que sobraram no Pool e não foram usadas neste frame
             for i = lineIndex, #skLines do skLines[i].Visible = false end
         else
             if ESP.skeletons[plr] then
-                for _, line in ipairs(ESP.skeletons[plr]) do pcall(function() line:Remove() end) end
+                for _, line in ipairs(ESP.skeletons[plr].Lines) do pcall(function() line:Remove() end) end
                 ESP.skeletons[plr] = nil
             end
         end
     end
 end)
+
+------------------------------------------------------------------------
+-- INTERFACE GRÁFICA (WindUI)
+------------------------------------------------------------------------
+HighlightsTab:Section({Title = "Controles do ESP"})
+
+HighlightsTab:Toggle({
+    Title = "Ativar ESP (Highlights)", 
+    Value = ESP.enabled, 
+    Callback = function(v) ESP.enabled = v end
+})
+
+HighlightsTab:Toggle({
+    Title = "Ativar Esqueleto (Skeleton)", 
+    Value = ESP.skeletonEnabled, 
+    Callback = function(v) ESP.skeletonEnabled = v end
+})
+
+HighlightsTab:Toggle({
+    Title = "Ativar Linhas (Tracers)", 
+    Value = ESP.tracersEnabled, 
+    Callback = function(v) ESP.tracersEnabled = v end
+})
+
+HighlightsTab:Section({Title = "Customização de Cores"})
+
+HighlightsTab:Colorpicker({
+    Title = "Cor do ESP Global", 
+    Default = ESP.globalColor, 
+    Callback = function(c) ESP.globalColor = c end
+})
