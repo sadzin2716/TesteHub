@@ -1,0 +1,184 @@
+--[[
+    MVSD - Murderers VS Sheriffs DUELS
+    UI: WindUI | Tema: Dark
+    Aba: Highlights (ESP Global Cor Única)
+]]
+
+local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+if not WindUI then return end
+
+local Window = WindUI:CreateWindow({
+    Title = "MVSD Highlights",
+    Icon = "eye",
+    Theme = "Dark",
+    Size = UDim2.fromOffset(550, 450),
+    Acrylic = true,
+    Transparent = true,
+    MinimizeKey = Enum.KeyCode.RightShift
+})
+
+local HighlightsTab = Window:Tab({Title = "Highlights", Icon = "eye"})
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+------------------------------------------------------------------------
+-- CONFIGURAÇÕES DOS MÓDULOS (Ativados por Padrão)
+------------------------------------------------------------------------
+local ESP = {
+    enabled = true,         
+    tracersEnabled = true,  
+    skeletonEnabled = true, 
+    globalColor = Color3.fromRGB(255, 0, 0), -- Iniciando em Vermelho Puro para todos
+    highlights = {}, lines = {}, skeletons = {}, maxDistance = 9999
+}
+
+local BoneConnections = {
+    {"Head", "UpperTorso"}, {"UpperTorso", "LowerTorso"},
+    {"UpperTorso", "LeftUpperArm"}, {"LeftUpperArm", "LeftLowerArm"}, {"LeftLowerArm", "LeftHand"},
+    {"UpperTorso", "RightUpperArm"}, {"RightUpperArm", "RightLowerArm"}, {"RightLowerArm", "RightHand"},
+    {"LowerTorso", "LeftUpperLeg"}, {"LeftUpperLeg", "LeftLowerLeg"}, {"LeftLowerLeg", "LeftFoot"},
+    {"LowerTorso", "RightUpperLeg"}, {"RightUpperLeg", "RightLowerLeg"}, {"RightLowerLeg", "RightFoot"},
+    {"Torso", "Left Arm"}, {"Torso", "Right Arm"}, {"Torso", "Left Leg"}, {"Torso", "Right Leg"}, {"Head", "Torso"}
+}
+
+------------------------------------------------------------------------
+-- MÓDULO HIGHLIGHTS
+------------------------------------------------------------------------
+local function clearPlayerVisuals(plr)
+    if ESP.highlights[plr] then pcall(function() ESP.highlights[plr]:Destroy() end); ESP.highlights[plr] = nil end
+    if ESP.lines[plr] then pcall(function() ESP.lines[plr]:Remove() end); ESP.lines[plr] = nil end
+    if ESP.skeletons[plr] then
+        for _, line in ipairs(ESP.skeletons[plr]) do pcall(function() line:Remove() end) end
+        ESP.skeletons[plr] = nil
+    end
+end
+
+local function getSkeletonLines(plr, count)
+    if not ESP.skeletons[plr] then ESP.skeletons[plr] = {} end
+    while #ESP.skeletons[plr] < count do
+        local line = Drawing.new("Line")
+        line.Thickness = 2
+        line.Transparency = 0.7
+        table.insert(ESP.skeletons[plr], line)
+    end
+    return ESP.skeletons[plr]
+end
+
+RunService.RenderStepped:Connect(function()
+    local anyVisualEnabled = ESP.enabled or ESP.tracersEnabled or ESP.skeletonEnabled
+    if not anyVisualEnabled then
+        for plr, _ in pairs(ESP.highlights) do clearPlayerVisuals(plr) end
+        for plr, _ in pairs(ESP.lines) do clearPlayerVisuals(plr) end
+        for plr, _ in pairs(ESP.skeletons) do clearPlayerVisuals(plr) end
+        return
+    end
+
+    local viewport = camera.ViewportSize
+    local origin = Vector2.new(viewport.X / 2, viewport.Y)
+    
+    local refPos = camera.CFrame.Position
+    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        refPos = player.Character.HumanoidRootPart.Position
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == player then continue end
+
+        local char = plr.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head"))
+
+        if not char or not hum or hum.Health <= 0 or not hrp then
+            clearPlayerVisuals(plr)
+            continue
+        end
+
+        local distance = (refPos - hrp.Position).Magnitude
+        local color = ESP.globalColor -- Aplica a mesma cor para todo mundo
+
+        if distance > ESP.maxDistance then
+            if ESP.highlights[plr] then ESP.highlights[plr].Enabled = false end
+            if ESP.lines[plr] then ESP.lines[plr].Visible = false end
+            if ESP.skeletons[plr] then
+                for _, line in ipairs(ESP.skeletons[plr]) do line.Visible = false end
+            end
+            continue
+        end
+
+        -- Highlight (Chamber)
+        if ESP.enabled then
+            local hl = ESP.highlights[plr]
+            if not hl or hl.Parent ~= char then
+                if hl then pcall(function() hl:Destroy() end) end
+                hl = Instance.new("Highlight")
+                hl.Name = "ESP_Highlight"
+                hl.FillTransparency = 0.4
+                hl.OutlineTransparency = 0.2
+                hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                hl.Parent = char
+                ESP.highlights[plr] = hl
+            end
+            hl.FillColor = color
+            hl.OutlineColor = color:Lerp(Color3.new(1,1,1), 0.3)
+            hl.Enabled = true
+        else
+            if ESP.highlights[plr] then pcall(function() ESP.highlights[plr]:Destroy() end); ESP.highlights[plr] = nil end
+        end
+
+        -- Tracers (Linhas)
+        if ESP.tracersEnabled then
+            local screenPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+            if onScreen then
+                local line = ESP.lines[plr]
+                if not line then
+                    line = Drawing.new("Line")
+                    line.Thickness = 1.5
+                    line.Transparency = 0.5
+                    ESP.lines[plr] = line
+                end
+                line.From = origin
+                line.To = Vector2.new(screenPos.X, screenPos.Y)
+                line.Color = color
+                line.Visible = true
+            else
+                if ESP.lines[plr] then ESP.lines[plr].Visible = false end
+            end
+        else
+            if ESP.lines[plr] then pcall(function() ESP.lines[plr]:Remove() end); ESP.lines[plr] = nil end
+        end
+
+        -- Skeletons (Esqueleto)
+        if ESP.skeletonEnabled then
+            local skLines = getSkeletonLines(plr, #BoneConnections)
+            local lineIndex = 1
+
+            for _, connection in ipairs(BoneConnections) do
+                local partA = char:FindFirstChild(connection[1])
+                local partB = char:FindFirstChild(connection[2])
+
+                if partA and partB then
+                    local posA, onScreenA = camera:WorldToViewportPoint(partA.Position)
+                    local posB, onScreenB = camera:WorldToViewportPoint(partB.Position)
+
+                    if onScreenA and onScreenB then
+                        local line = skLines[lineIndex]
+                        line.From = Vector2.new(posA.X, posA.Y)
+                        line.To = Vector2.new(posB.X, posB.Y)
+                        line.Color = color
+                        line.Visible = true
+                        lineIndex = lineIndex + 1
+                    end
+                end
+            end
+            for i = lineIndex, #skLines do skLines[i].Visible = false end
+        else
+            if ESP.skeletons[plr] then
+                for _, line in ipairs(ESP.skeletons[plr]) do pcall(function() line:Remove() end) end
+                ESP.skeletons[plr] = nil
+            end
+        end
+    end
+end)
